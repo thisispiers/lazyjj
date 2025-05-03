@@ -4,7 +4,10 @@ use anyhow::Result;
 
 use ansi_to_tui::IntoText;
 use ratatui::{
-    crossterm::event::{Event, KeyCode, KeyEventKind},
+    crossterm::event::{
+        Event, KeyCode, KeyEventKind,
+        MouseEvent, MouseEventKind,
+    },
     prelude::*,
     widgets::*,
 };
@@ -14,7 +17,8 @@ use crate::{
     commander::{CommandLogItem, Commander},
     env::Config,
     ui::{
-        details_panel::DetailsPanel, help_popup::HelpPopup, utils::tabs_to_spaces, Component,
+        details_panel::DetailsPanel, details_panel::DetailsPanelEvent,
+        help_popup::HelpPopup, utils::tabs_to_spaces, Component,
         ComponentAction,
     },
     ComponentInputResult,
@@ -28,6 +32,9 @@ pub struct CommandLogTab {
     commands_height: u16,
 
     output_panel: DetailsPanel,
+
+    // Rect of panels [0] = commands, [1] = details
+    panel_rect: [Rect; 2],
 
     config: Config,
 }
@@ -44,6 +51,7 @@ impl CommandLogTab {
             commands_list_state,
             command_history,
             output_panel: DetailsPanel::new(),
+            panel_rect: [Rect::ZERO, Rect::ZERO],
             config: commander.env.config.clone(),
         })
     }
@@ -135,13 +143,22 @@ impl CommandLogTab {
     }
 
     fn scroll_commands(&mut self, scroll: isize) {
+        let current_command_index = self
+            .commands_list_state
+            .selected()
+            .map(|selected_index| selected_index.saturating_add_signed(scroll))
+            .unwrap_or(0);
+        if current_command_index == 0 && scroll < 0 {
+            return;
+        }
+        let max_command_index = self.command_history.len();
+        if current_command_index == max_command_index && scroll > 0 {
+            return;
+        }
+
         *self.commands_list_state.selected_mut() = Some(
-            (self
-                .commands_list_state
-                .selected()
-                .map(|selected_index| selected_index.saturating_add_signed(scroll))
-                .unwrap_or(0))
-            .min(self.command_history.len() - 1)
+            current_command_index
+            .min(max_command_index - 1)
             .max(0),
         );
         self.output_panel.scroll = 0;
@@ -169,6 +186,7 @@ impl Component for CommandLogTab {
                 Constraint::Percentage(100 - self.config.layout_percent()),
             ])
             .split(area);
+        self.panel_rect = [chunks[0], chunks[1]];
 
         // Draw commands
         {
@@ -286,6 +304,43 @@ impl Component for CommandLogTab {
                 }
                 _ => return Ok(ComponentInputResult::NotHandled),
             };
+        }
+
+        if let Event::Mouse(mouse_event) = event {
+            // Determine if mouse event is inside log-view or details-view
+            fn contains(rect: &Rect, mouse_event: &MouseEvent) -> bool {
+                rect.x <= mouse_event.column
+                && mouse_event.column < rect.x + rect.width
+                && rect.y <= mouse_event.row
+                && mouse_event.row < rect.y + rect.height
+            }
+            let find_panel = || -> Option<usize> {
+                for (i, rect) in self.panel_rect.iter().enumerate() {
+                    if contains(rect, &mouse_event) {
+                        return Some(i);
+                    }
+                }
+                return None;
+            };
+            let panel = find_panel();
+            // Execute command dependent on panel and event kind
+            const COMMANDS_PANEL: Option<usize> = Some(0);
+            const DETAILS_PANEL: Option<usize> = Some(1);
+            match (panel, mouse_event.kind) {
+                (COMMANDS_PANEL, MouseEventKind::ScrollUp) => self.scroll_commands(-1),
+                (COMMANDS_PANEL, MouseEventKind::ScrollDown) => self.scroll_commands(1),
+                (DETAILS_PANEL, MouseEventKind::ScrollUp) => {
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                },
+                (DETAILS_PANEL, MouseEventKind::ScrollDown) => {
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                    self.output_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                },
+                _ => {} // Handle other mouse events if necessary
+            }
         }
 
         Ok(ComponentInputResult::Handled)
