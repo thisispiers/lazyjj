@@ -55,7 +55,15 @@ impl DetailsPanel {
     }
 
     pub fn scroll(&mut self, scroll: isize) {
-        self.scroll = (self.scroll.saturating_add_signed(scroll as i16)).min(self.lines - 1)
+        if self.scroll == 0 && scroll < 0 {
+            return;
+        }
+        let max_scroll = self.lines - 1;
+        if self.scroll == max_scroll && scroll > 0 {
+            return;
+        }
+
+        self.scroll = (self.scroll.saturating_add_signed(scroll as i16)).min(max_scroll)
     }
 
     pub fn handle_event(&mut self, details_panel_event: DetailsPanelEvent) {

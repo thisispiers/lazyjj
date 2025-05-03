@@ -193,11 +193,19 @@ impl LogTab<'_> {
         let heads: &Vec<Head> = log_output.heads.as_ref();
 
         let current_head_index = self.get_current_head_index();
+        if current_head_index.unwrap_or(0) == 0 && scroll < 0 {
+            return;
+        }
+        let max_head_index = heads.len() - 1;
+        if current_head_index.unwrap_or(0) == max_head_index && scroll > 0 {
+            return;
+        }
+
         let next_head = match current_head_index {
             Some(current_head_index) => heads.get(
                 current_head_index
                     .saturating_add_signed(scroll)
-                    .min(heads.len() - 1),
+                    .min(max_head_index),
             ),
             None => heads.first(),
         };
