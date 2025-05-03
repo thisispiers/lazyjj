@@ -9,7 +9,8 @@ use crate::{
     },
     env::{Config, DiffFormat},
     ui::{
-        details_panel::DetailsPanel, help_popup::HelpPopup, utils::tabs_to_spaces, Component,
+        details_panel::DetailsPanel, details_panel::DetailsPanelEvent,
+        help_popup::HelpPopup, utils::tabs_to_spaces, Component,
         ComponentAction,
     },
     ComponentInputResult,
@@ -17,7 +18,11 @@ use crate::{
 
 use ansi_to_tui::IntoText;
 use ratatui::{
-    crossterm::event::{Event, KeyCode, KeyEventKind},
+    layout::Rect,
+    crossterm::event::{
+        Event, KeyCode, KeyEventKind,
+        MouseEvent, MouseEventKind,
+    },
     prelude::*,
     widgets::*,
 };
@@ -36,6 +41,9 @@ pub struct FilesTab {
     diff_panel: DetailsPanel,
     diff_output: Result<Option<String>, CommandError>,
     diff_format: DiffFormat,
+
+    // Rect of panels [0] = files, [1] = details
+    panel_rect: [Rect; 2],
 
     config: Config,
 }
@@ -99,6 +107,8 @@ impl FilesTab {
             diff_format,
             diff_panel: DetailsPanel::new(),
 
+            panel_rect: [Rect::ZERO, Rect::ZERO],
+
             config: commander.env.config.clone(),
         })
     }
@@ -146,11 +156,19 @@ impl FilesTab {
     fn scroll_files(&mut self, commander: &mut Commander, scroll: isize) -> Result<()> {
         if let Ok(files) = self.files_output.as_ref() {
             let current_file_index = self.get_current_file_index();
+            if current_file_index.unwrap_or(0) == 0 && scroll < 0 {
+                return Ok(());
+            }
+            let max_file_index = files.len() - 1;
+            if current_file_index.unwrap_or(0) == max_file_index && scroll > 0 {
+                return Ok(());
+            }
+
             let next_file = match current_file_index {
                 Some(current_file_index) => files.get(
                     current_file_index
                         .saturating_add_signed(scroll)
-                        .min(files.len() - 1),
+                        .min(max_file_index),
                 ),
                 None => files.first(),
             }
@@ -185,6 +203,7 @@ impl Component for FilesTab {
                 Constraint::Percentage(100 - self.config.layout_percent()),
             ])
             .split(area);
+        self.panel_rect = [chunks[0], chunks[1]];
 
         // Draw files
         {
@@ -351,6 +370,43 @@ impl Component for FilesTab {
                 }
                 _ => return Ok(ComponentInputResult::NotHandled),
             };
+        }
+
+        if let Event::Mouse(mouse_event) = event {
+            // Determine if mouse event is inside log-view or details-view
+            fn contains(rect: &Rect, mouse_event: &MouseEvent) -> bool {
+                rect.x <= mouse_event.column
+                && mouse_event.column < rect.x + rect.width
+                && rect.y <= mouse_event.row
+                && mouse_event.row < rect.y + rect.height
+            }
+            let find_panel = || -> Option<usize> {
+                for (i, rect) in self.panel_rect.iter().enumerate() {
+                    if contains(rect, &mouse_event) {
+                        return Some(i);
+                    }
+                }
+                return None;
+            };
+            let panel = find_panel();
+            // Execute command dependent on panel and event kind
+            const FILES_PANEL: Option<usize> = Some(0);
+            const DETAILS_PANEL: Option<usize> = Some(1);
+            match (panel, mouse_event.kind) {
+                (FILES_PANEL, MouseEventKind::ScrollUp) => self.scroll_files(commander, -1)?,
+                (FILES_PANEL, MouseEventKind::ScrollDown) => self.scroll_files(commander, 1)?,
+                (DETAILS_PANEL, MouseEventKind::ScrollUp) => {
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollUp);
+                },
+                (DETAILS_PANEL, MouseEventKind::ScrollDown) => {
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                    self.diff_panel.handle_event(DetailsPanelEvent::ScrollDown);
+                },
+                _ => {} // Handle other mouse events if necessary
+            }
         }
 
         Ok(ComponentInputResult::Handled)
